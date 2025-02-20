@@ -1,0 +1,4 @@
+*.pyc
+__pycache__/
+budget_report_*.pdf
+budget_report_*.csv
