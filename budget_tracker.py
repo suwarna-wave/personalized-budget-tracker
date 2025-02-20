@@ -1,176 +1,253 @@
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import json
-from datetime import datetime
 import os
+from datetime import datetime
+import csv
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from ttkthemes import ThemedTk
 
 class BudgetTracker:
     def __init__(self, root):
         self.root = root
         self.root.title("Personal Budget Tracker")
-        self.root.geometry("600x700")
+        self.root.geometry("900x700")
+        self.root.configure(bg="#f0f0f0")
 
-        # Data storage
         self.data_dir = os.path.expanduser("~/.budget_tracker")
         os.makedirs(self.data_dir, exist_ok=True)
         self.data_file = os.path.join(self.data_dir, "budget_data.json")
-        self.budget_data = {"income": 0, "expenses": {}, "transactions": []}
+        self.budget_data = {"income": 0, "expenses": {}, "transactions": [], "split_names": []}
         self.load_data()
 
-        # Categories
         self.categories = ["Food", "Rent", "Entertainment", "Utilities", "Other"]
 
-        # GUI
+        self.style = ttk.Style()
+        self.style.theme_use("radiance")
+        self.style.configure("TButton", font=("Helvetica", 12), padding=5)
+        self.style.configure("TLabel", font=("Helvetica", 12), background="#f0f0f0")
+        self.style.configure("TFrame", background="#f0f0f0")
+        self.style.configure("TLabelframe.Label", font=("Helvetica", 14, "bold"), foreground="#333333")
+
         self.create_gui()
 
     def create_gui(self):
-        # Title
-        tk.Label(self.root, text="Personal Budget Tracker", font=("Arial", 20, "bold")).pack(pady=10)
+        title_label = ttk.Label(self.root, text="Personal Budget Tracker", font=("Helvetica", 24, "bold"), foreground="#2c3e50")
+        title_label.pack(pady=15)
 
-        # Income Frame
-        income_frame = ttk.Frame(self.root)
-        income_frame.pack(pady=10, padx=10, fill="x")
-        ttk.Label(income_frame, text="Income:").pack(side="left", padx=5)
-        self.income_entry = ttk.Entry(income_frame)
-        self.income_entry.pack(side="left", padx=5)
-        ttk.Button(income_frame, text="Add Income", command=self.add_income).pack(side="left", padx=5)
+        main_frame = ttk.Frame(self.root, relief="groove", borderwidth=2)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
-        # Expense Frame
-        expense_frame = ttk.Frame(self.root)
-        expense_frame.pack(pady=10, padx=10, fill="x")
-        ttk.Label(expense_frame, text="Expense Amount:").pack(side="left", padx=5)
-        self.expense_entry = ttk.Entry(expense_frame)
-        self.expense_entry.pack(side="left", padx=5)
-        self.category_var = tk.StringVar(value=self.categories[0])
-        self.category_menu = ttk.Combobox(expense_frame, textvariable=self.category_var, values=self.categories)
-        self.category_menu.pack(side="left", padx=5)
-        ttk.Button(expense_frame, text="Add Expense", command=self.add_expense).pack(side="left", padx=5)
+        input_frame = ttk.LabelFrame(main_frame, text="Add Transaction", padding=10)
+        input_frame.pack(side="left", fill="y", padx=10, pady=10)
+        ttk.Button(input_frame, text="Add Income", command=lambda: self.add_transaction("Income")).pack(pady=10, fill="x")
+        ttk.Button(input_frame, text="Add Expense", command=lambda: self.add_transaction("Expense")).pack(pady=10, fill="x")
 
-        # Buttons Frame
-        button_frame = ttk.Frame(self.root)
-        button_frame.pack(pady=10)
-        ttk.Button(button_frame, text="Show Summary", command=self.show_summary).pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Spending Chart", command=self.show_chart).pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Monthly Summary", command=self.show_monthly_summary).pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Clear Data", command=self.clear_data).pack(side="left", padx=10)
-
-        # Transaction History
-        ttk.Label(self.root, text="Transaction History", font=("Arial", 14)).pack(pady=5)
-        self.history_text = tk.Text(self.root, height=15, width=70)
-        self.history_text.pack(pady=5)
+        history_frame = ttk.LabelFrame(main_frame, text="Transaction History", padding=10)
+        history_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        self.history_text = tk.Text(history_frame, height=20, width=50, font=("Helvetica", 10), bg="#ffffff", fg="#333333", relief="flat", borderwidth=1)
+        self.history_text.pack(fill="both", expand=True)
         self.update_history()
 
-    def add_income(self):
-        try:
-            income = float(self.income_entry.get())
-            if income <= 0:
-                raise ValueError("Income must be positive!")
-            self.budget_data["income"] += income
-            self.budget_data["transactions"].append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Income: +${income:.2f}")
-            self.save_data()
-            self.update_history()
-            messagebox.showinfo("Success", f"Added ${income:.2f} to income!")
-            self.income_entry.delete(0, tk.END)
-            self.check_balance()
-        except ValueError as e:
-            messagebox.showerror("Error", str(e) if str(e) else "Please enter a valid number!")
+        buttons_frame = ttk.Frame(self.root, relief="groove", borderwidth=2)
+        buttons_frame.pack(pady=15, fill="x", padx=20)
+        buttons = [
+            ("Show Summary", self.show_summary),
+            ("Spending Chart", self.show_chart),
+            ("Monthly Summary", self.show_monthly_summary),
+            ("Download PDF", self.download_pdf),
+            ("Download CSV", self.download_csv)
+        ]
+        for text, command in buttons:
+            ttk.Button(buttons_frame, text=text, command=command).pack(side="left", padx=10, pady=5)
 
-    def add_expense(self):
+    def add_transaction(self, type_):
+        window = tk.Toplevel(self.root)
+        window.title(f"Add {type_}")
+        window.geometry("400x500")
+        window.configure(bg="#f0f0f0")
+
+        style = ttk.Style(window)
+        style.theme_use("radiance")
+        style.configure("TLabel", background="#f0f0f0", font=("Helvetica", 12))
+        style.configure("TButton", font=("Helvetica", 12), padding=5)
+
+        ttk.Label(window, text=f"{type_} Amount:", font=("Helvetica", 14, "bold"), foreground="#2c3e50").pack(pady=10)
+        amount_entry = ttk.Entry(window, font=("Helvetica", 12))
+        amount_entry.pack(pady=5, padx=20, fill="x")
+
+        ttk.Label(window, text="Category/Title:", font=("Helvetica", 14, "bold"), foreground="#2c3e50").pack(pady=10)
+        category_var = tk.StringVar(value=self.categories[0])
+        category_menu = ttk.Combobox(window, textvariable=category_var, values=self.categories, font=("Helvetica", 12))
+        category_menu.pack(pady=5, padx=20, fill="x")
+
+        title_entry = ttk.Entry(window, font=("Helvetica", 12))
+        desc_entry = ttk.Entry(window, font=("Helvetica", 12))
+
+        def on_category_change(event):
+            if category_var.get() == "Other":
+                ttk.Label(window, text="Custom Title:", font=("Helvetica", 12)).pack(pady=5)
+                title_entry.pack(pady=5, padx=20, fill="x")
+                ttk.Label(window, text="Description (Optional):", font=("Helvetica", 12)).pack(pady=5)
+                desc_entry.pack(pady=5, padx=20, fill="x")
+            else:
+                for widget in window.winfo_children():
+                    if widget not in [amount_entry, category_menu] and widget.winfo_class() in ["TEntry", "TLabel"]:
+                        widget.pack_forget()
+
+        category_menu.bind("<<ComboboxSelected>>", on_category_change)
+
+        ttk.Label(window, text="Split Transaction?", font=("Helvetica", 14, "bold"), foreground="#2c3e50").pack(pady=10)
+        split_var = tk.BooleanVar()
+        ttk.Checkbutton(window, variable=split_var, command=lambda: self.handle_split(window, split_var)).pack(pady=5)
+        self.split_entries = []
+
+        ttk.Button(window, text="Save", command=lambda: self.save_transaction(type_, amount_entry.get(), category_var.get(), title_entry.get(), desc_entry.get(), split_var.get(), window)).pack(pady=20)
+
+        window.update_idletasks()
+        width, height = window.winfo_width(), window.winfo_height()
+        x = (window.winfo_screenwidth() // 2) - (width // 2)
+        y = (window.winfo_screenheight() // 2) - (height // 2)
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def handle_split(self, window, split_var):
+        if split_var.get():
+            ttk.Label(window, text="Split Names (comma-separated):", font=("Helvetica", 12)).pack(pady=5)
+            split_entry = ttk.Entry(window, font=("Helvetica", 12))
+            split_entry.pack(pady=5, padx=20, fill="x")
+            self.split_entries.append(split_entry)
+        else:
+            for entry in self.split_entries:
+                entry.pack_forget()
+            self.split_entries = []
+
+    def save_transaction(self, type_, amount, category, title, desc, split, window):
         try:
-            amount = float(self.expense_entry.get())
+            amount = float(amount)
             if amount <= 0:
-                raise ValueError("Expense must be positive!")
-            category = self.category_var.get()
-            self.budget_data["expenses"][category] = self.budget_data["expenses"].get(category, 0) + amount
-            self.budget_data["transactions"].append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {category}: -${amount:.2f}")
+                raise ValueError(f"{type_} must be positive!")
+            title = title if category == "Other" and title else category
+            desc = desc if desc else "No description"
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            transaction = f"{timestamp} - {type_}: ${amount:.2f} - {title} - {desc}"
+            
+            if type_ == "Income":
+                self.budget_data["income"] += amount
+            else:
+                self.budget_data["expenses"][title] = self.budget_data["expenses"].get(title, 0) + amount
+            
+            if split and self.split_entries:
+                names = self.split_entries[0].get().split(",")
+                self.budget_data["split_names"].extend([name.strip() for name in names if name.strip() and name.strip() not in self.budget_data["split_names"]])
+                transaction += f" (Split: {', '.join(names)})"
+            
+            self.budget_data["transactions"].append(transaction)
             self.save_data()
             self.update_history()
-            messagebox.showinfo("Success", f"Added ${amount:.2f} to {category}!")
-            self.expense_entry.delete(0, tk.END)
-            self.check_balance()
+            messagebox.showinfo("Success", f"{type_} added!", parent=self.root)
+            window.destroy()
         except ValueError as e:
-            messagebox.showerror("Error", str(e) if str(e) else "Please enter a valid number!")
+            messagebox.showerror("Error", str(e) or "Invalid amount!", parent=window)
 
     def show_summary(self):
         total_expenses = sum(self.budget_data["expenses"].values())
         balance = self.budget_data["income"] - total_expenses
-        summary = f"Total Income: ${self.budget_data['income']:.2f}\n"
-        summary += f"Total Expenses: ${total_expenses:.2f}\n"
-        summary += f"Remaining Balance: ${balance:.2f}"
-        messagebox.showinfo("Budget Summary", summary)
+        summary = f"Total Income: ${self.budget_data['income']:.2f}\nTotal Expenses: ${total_expenses:.2f}\nBalance: ${balance:.2f}"
+        messagebox.showinfo("Summary", summary, parent=self.root)
 
     def show_chart(self):
         if not self.budget_data["expenses"]:
-            messagebox.showwarning("Warning", "No expenses to display!")
+            messagebox.showwarning("Warning", "No expenses to display!", parent=self.root)
             return
-        categories = list(self.budget_data["expenses"].keys())
-        amounts = list(self.budget_data["expenses"].values())
-        plt.pie(amounts, labels=categories, autopct="%1.1f%%", startangle=90)
-        plt.title("Spending Distribution")
-        plt.axis("equal")
+        plt.pie(self.budget_data["expenses"].values(), labels=self.budget_data["expenses"].keys(), autopct="%1.1f%%", colors=plt.cm.Paired.colors)
+        plt.title("Expense Distribution")
         plt.show()
 
     def show_monthly_summary(self):
         monthly_data = {}
         for trans in self.budget_data["transactions"]:
-            date, desc = trans.split(" - ", 1)
+            date, rest = trans.split(" - ", 1)
             month = datetime.strptime(date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m")
             if month not in monthly_data:
                 monthly_data[month] = {"income": 0, "expenses": {}}
-            if "Income" in desc:
-                amount = float(desc.split("$")[1])
+            if "Income" in rest:
+                amount = float(rest.split("$")[1].split(" - ")[0])
                 monthly_data[month]["income"] += amount
             else:
-                category, amount = desc.split(": -$", 1)
-                amount = float(amount)
+                amount = float(rest.split("$")[1].split(" - ")[0])
+                category = rest.split(" - ")[1]
                 monthly_data[month]["expenses"][category] = monthly_data[month]["expenses"].get(category, 0) + amount
 
         if not monthly_data:
-            messagebox.showinfo("Monthly Summary", "No transactions yet.")
+            messagebox.showinfo("Monthly Summary", "No transactions yet.", parent=self.root)
             return
 
-        # Monthly Summary Window
-        summary_window = tk.Toplevel(self.root)
-        summary_window.title("Monthly Summary")
-        summary_window.geometry("600x500")
+        window = tk.Toplevel(self.root)
+        window.title("Monthly Summary")
+        window.geometry("600x500")
+        window.configure(bg="#f0f0f0")
 
-        summary_text = tk.Text(summary_window, height=10, width=70)
-        summary_text.pack(pady=10)
+        text = tk.Text(window, height=10, width=70, font=("Helvetica", 10), bg="#ffffff", fg="#333333", relief="flat", borderwidth=1)
+        text.pack(pady=10, padx=20)
         for month, data in monthly_data.items():
             total_expenses = sum(data["expenses"].values())
-            balance = data["income"] - total_expenses
-            summary_text.insert(tk.END, f"{month}: Income: ${data['income']:.2f}, Expenses: ${total_expenses:.2f}, Balance: ${balance:.2f}\n")
+            text.insert(tk.END, f"{month}: Income: ${data['income']:.2f}, Expenses: ${total_expenses:.2f}, Balance: ${data['income'] - total_expenses:.2f}\n")
 
-        # Pie Chart for Latest Month
         latest_month = max(monthly_data.keys())
-        expenses = monthly_data[latest_month]["expenses"]
-        if expenses:
-            fig, ax = plt.subplots()
-            ax.pie(expenses.values(), labels=expenses.keys(), autopct="%1.1f%%", startangle=90)
-            ax.set_title(f"Spending for {latest_month}")
-            ax.axis("equal")
-            canvas = FigureCanvasTkAgg(fig, master=summary_window)
-            canvas.draw()
-            canvas.get_tk_widget().pack(pady=10)
+        fig, ax = plt.subplots()
+        ax.pie(monthly_data[latest_month]["expenses"].values(), labels=monthly_data[latest_month]["expenses"].keys(), autopct="%1.1f%%", colors=plt.cm.Paired.colors)
+        ax.set_title(f"Spending for {latest_month}")
+        canvas = FigureCanvasTkAgg(fig, master=window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(pady=10, padx=20)
 
-    def clear_data(self):
-        if messagebox.askyesno("Confirm", "Are you sure you want to clear all data?"):
-            self.budget_data = {"income": 0, "expenses": {}, "transactions": []}
-            self.save_data()
-            self.update_history()
-            messagebox.showinfo("Success", "Data cleared!")
+    def download_pdf(self):
+        try:
+            filename = f"budget_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            c = canvas.Canvas(filename, pagesize=letter)
+            c.setFont("Helvetica", 12)
+            c.setFillColorRGB(0.1, 0.2, 0.3)
+            c.drawString(100, 750, "Personal Budget Tracker Report")
+            c.setFillColorRGB(0, 0, 0)
+            y = 700
+            for trans in self.budget_data["transactions"]:
+                c.drawString(100, y, trans)
+                y -= 20
+                if y < 50:
+                    c.showPage()
+                    y = 750
+            c.save()
+            messagebox.showinfo("Success", f"PDF saved as {filename}", parent=self.root)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save PDF: {str(e)}", parent=self.root)
 
-    def check_balance(self):
-        total_expenses = sum(self.budget_data["expenses"].values())
-        if total_expenses > self.budget_data["income"]:
-            messagebox.showwarning("Warning", "Expenses exceed income!")
+    def download_csv(self):
+        try:
+            filename = f"budget_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            with open(filename, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Timestamp", "Type", "Amount", "Title", "Description", "Splits"])
+                for trans in self.budget_data["transactions"]:
+                    parts = trans.split(" - ")
+                    type_amount = parts[1].split(": $")
+                    type_ = type_amount[0]
+                    amount = type_amount[1].split(" - ")[0]
+                    title = parts[2]
+                    desc_splits = parts[3].split(" (Split: ")
+                    desc = desc_splits[0]
+                    splits = desc_splits[1][:-1] if len(desc_splits) > 1 else ""
+                    writer.writerow([parts[0], type_, amount, title, desc, splits])
+            messagebox.showinfo("Success", f"CSV saved as {filename}", parent=self.root)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save CSV: {str(e)}", parent=self.root)
 
     def update_history(self):
         self.history_text.delete("1.0", tk.END)
-        for transaction in self.budget_data["transactions"]:
-            self.history_text.insert(tk.END, transaction + "\n")
+        for trans in self.budget_data["transactions"]:
+            self.history_text.insert(tk.END, trans + "\n")
 
     def save_data(self):
         with open(self.data_file, "w") as f:
@@ -181,9 +258,14 @@ class BudgetTracker:
             with open(self.data_file, "r") as f:
                 self.budget_data = json.load(f)
         except FileNotFoundError:
-            self.budget_data = {"income": 0, "expenses": {}, "transactions": []}
+            self.budget_data = {"income": 0, "expenses": {}, "transactions": [], "split_names": []}
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = BudgetTracker(root)
-    root.mainloop()
+    try:
+        root = ThemedTk(theme="radiance")
+        app = BudgetTracker(root)
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("Application closed by user.")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
